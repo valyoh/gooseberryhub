@@ -18,7 +18,7 @@ This is my personal blog where I share posts about everything.
 
 2. **Run the Streamlit app**:
     ```bash
-    streamlit run app.py
+    streamlit run gooseberryhub.py
     ```
 
 ## Adding Posts
