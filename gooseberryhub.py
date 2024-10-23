@@ -51,6 +51,12 @@ hide_streamlit_style = """
                 border-radius: 15px;  
                 object-fit: cover;  /* Cover ensures the image maintains aspect ratio */
             }
+            /* Round corners of the logo image */
+            [data-testid="stImage"] img {
+                border-radius: 15px;  
+                object-fit: cover;  /* Cover ensures the image maintains aspect ratio */
+            }
+            
             </style>
             """
 st.markdown(hide_streamlit_style, unsafe_allow_html=True)
