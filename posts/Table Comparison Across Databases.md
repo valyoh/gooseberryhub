@@ -3,43 +3,78 @@ title: "Table Comparison Across Databases "
 date: "2024-10-29"
 ---
 
-## PowerShell Script for Table Comparison Across Databases on Different Servers
+### Comparing Tables Across SQL Server Databases with PowerShell
 
-When working in a multi-database environment, especially across different servers, ensuring data consistency is often critical. Whether it's validating data replication, migration, or identifying discrepancies across environments, comparing tables is a common but challenging task. This blog post will walk through a PowerShell script that compares tables from two different databases on separate servers. It’s customizable, easy to use, and provides insights into row-level and column-level differences.
+When managing databases across environments, such as development and production, it’s essential to ensure data consistency. 
+This PowerShell script compares specific columns in a table across two SQL Server databases. 
+Let’s walk through each section to understand how it works and how you can customize it to your needs.
+
+### Prerequisites
+
+- **PowerShell** installed on your machine.
+- **Permissions** to connect to both SQL Server instances and query the databases.
+- **Database setup** with the table structure and primary keys in place.
 
 ### Script Overview
 
-The script compares specific columns within tables in two databases, displaying any differences found for easy review. By leveraging PowerShell’s ability to connect to SQL databases, execute queries, and manage data, this script efficiently automates a task that would otherwise be labor-intensive.
+This script:
+1. Connects to two SQL Server databases.
+2. Retrieves data from a specified table in each database.
+3. Compares specific columns for each primary key.
+4. Outputs any differences between the two datasets.
 
-### Parameters
+### Parameter Definitions
 
-The script accepts the following parameters:
-
-- **ConnectionString1**: The connection string for the first database.
-- **ConnectionString2**: The connection string for the second database.
-- **TableName**: The name of the table to compare.
-- **PrimaryKeyColumn**: The column used as the primary key, which uniquely identifies rows in the table.
-- **ColumnsToCompare**: An array of column names to be compared between the two databases.
-
-### Detailed Script Walkthrough
-
-#### Step 1: Defining the Column List
-
-The first step of the script is to prepare the list of columns to retrieve from each database. This list includes the primary key column to uniquely identify rows and the columns specified for comparison.
+At the beginning, we use the `param` block to define the script’s parameters. 
+These include the server instance names, database names, table name, primary key, and the columns to compare.
 
 ```powershell
-$columnList = $PrimaryKeyColumn + ", " + ($ColumnsToCompare -join ", ")
+param(
+    [string]$ServerInstance1 = "",    
+    [string]$ServerInstance2 = "",    
+    [string]$Database1 = "",          
+    [string]$Database2 = "",          
+    [string]$TableName,               
+    [string]$PrimaryKeyColumn,        
+    [string[]]$ColumnsToCompare       
+)
 ```
 
-#### Step 2: Function to Retrieve Table Data
+Each parameter serves a specific purpose:
+- `$ServerInstance1` and `$ServerInstance2` are the server names or IPs of the SQL Server instances.
+- `$Database1` and `$Database2` represent the database names on each server.
+- `$TableName` is the name of the table we want to compare.
+- `$PrimaryKeyColumn` is the primary key column used to identify rows uniquely.
+- `$ColumnsToCompare` is an array of column names in the table that we want to compare.
 
-The `Get-TableData` function takes three parameters:
+### Connection String Setup
 
-- **ConnectionString**: The database connection string.
-- **Table**: The table name.
-- **Columns**: The columns to query.
+Next, we define connection strings to connect to each database. 
+Here, the `TrustServerCertificate=True` option helps connect securely even if the SSL certificate is not trusted by the machine:
 
-The function constructs an SQL `SELECT` statement to retrieve data from the specified columns and uses the connection string to connect to the database.
+```powershell
+$ConnectionString1 = "Server=$ServerInstance1;Database=$Database1;Integrated Security=True;TrustServerCertificate=True"
+$ConnectionString2 = "Server=$ServerInstance2;Database=$Database2;Integrated Security=True;TrustServerCertificate=True"
+```
+
+These connection strings use **Windows Integrated Security**, which requires the user to have permissions on both SQL Server instances.
+
+### Creating a Column List
+
+The `ColumnsToCompare` parameter is used to create a comma-separated list of columns, including the primary key column. 
+This will help build the SQL `SELECT` query dynamically:
+
+```powershell
+$columnList = $PrimaryKeyColumn + "," + ($ColumnsToCompare -join ", ")
+```
+
+### Retrieving Table Data Function
+
+This `Get-TableData` function handles data retrieval by:
+1. Building a SQL `SELECT` query.
+2. Establishing a connection to the SQL Server.
+3. Executing the query and loading the results into a DataTable object.
+4. Converting the DataTable into a hashtable, keyed by the primary key value for easy comparison.
 
 ```powershell
 function Get-TableData {
@@ -49,95 +84,88 @@ function Get-TableData {
         [string]$Columns
     )
 
-    # SQL query
     $query = "SELECT $Columns FROM $Table"
-```
+    $connection = New-Object System.Data.SqlClient.SqlConnection
+    $connection.ConnectionString = $ConnectionString
+    $command = $connection.CreateCommand()
+    $command.CommandText = $query
 
-1. **Setting up the SQL Connection and Command**:
-   The function creates an SQL connection and command object using the connection string. Then, it executes the query and stores the results in a `DataTable`.
+    $dataTable = New-Object System.Data.DataTable
 
-2. **Error Handling**:
-   If an error occurs, it’s logged using `Write-Error`, helping to troubleshoot issues with query execution.
+    try {
+        $connection.Open()
+        $reader = $command.ExecuteReader()
+        $dataTable.Load($reader)
+        $reader.Close()
+    } catch {
+        Write-Error "Failed to execute query: $($_.Exception.Message)"
+    } finally {
+        $connection.Close()
+    }
 
-3. **Data Storage**:
-   After loading the query result into a `DataTable`, the script converts it into a hashtable keyed by the primary key column. This allows efficient lookup and comparison.
-
-```powershell
-    # Convert DataTable to a hashtable keyed by Primary Key Column
     return $dataTable | Group-Object -Property $PrimaryKeyColumn -AsHashTable -AsString
 }
 ```
 
-#### Step 3: Retrieving Data from Both Databases
+### Loading and Comparing Data
 
-The main script calls `Get-TableData` twice, once for each database, and stores the results in two hashtables, `tableData1` and `tableData2`.
+After data retrieval, we have two hashtables: `$tableData1` and `$tableData2`. 
+Each key represents a primary key from the table, with values holding the row data.
+
+The following block collects all unique keys from both tables into `$allKeys`, which will be used to compare rows across both datasets:
 
 ```powershell
 $tableData1 = Get-TableData -ConnectionString $ConnectionString1 -Table $TableName -Columns $columnList
 $tableData2 = Get-TableData -ConnectionString $ConnectionString2 -Table $TableName -Columns $columnList
-```
 
-#### Step 4: Comparing the Two Data Sets
-
-1. **Combining Keys**:
-   The script collects all unique keys (primary keys) from both tables into a set, `allKeys`. This ensures that all rows, even those missing in one of the tables, are accounted for.
-
-```powershell
 $allKeys = [System.Collections.Generic.HashSet[string]]::new()
-$tableData1.Keys + $tableData2.Keys | ForEach-Object { $allKeys.Add($_) }
+$tableData1.Keys | ForEach-Object { $allKeys.Add($_) }
+$tableData2.Keys | ForEach-Object { $allKeys.Add($_) }
 ```
 
-2. **Iterating Through Keys**:
-   For each key, the script:
-   
-   - Checks if the key exists in both tables.
-   - Compares each column specified in `$ColumnsToCompare`.
-   - Reports any differences, including the values from both databases.
+### Data Comparison and Output
+
+For each key in `$allKeys`, the script checks if the row exists in both datasets:
+1. **Row exists in both**: Each column in `$ColumnsToCompare` is compared. If a difference is found, the column name and differing values are output.
+2. **Row missing in one database**: If a row is only in one database, it is identified as missing in the other.
+
+Here’s the comparison and output code:
 
 ```powershell
-foreach ($key in $allKeys) {
-    $row1 = $tableData1[$key]
-    $row2 = $tableData2[$key]
+if ($allKeys.Count -eq 0) {
+    Write-Output "No differences found between the tables in the specified databases."
+} else {
+    Write-Output "Differences found:"
+    foreach ($key in $allKeys) {
+        $row1 = $tableData1[$key]
+        $row2 = $tableData2[$key]
 
-    if ($row1 -and $row2) {
-        # Row exists in both tables, compare specified columns
-        $hasDifference = $false
-        foreach ($column in $ColumnsToCompare) {
-            if ($row1.$column -ne $row2.$column) {
-                Write-Output "Row ID ($PrimaryKeyColumn): $key - Column '$column' differs"
-                Write-Output "  Database1: $($row1.$column)"
-                Write-Output "  Database2: $($row2.$column)"
-                $hasDifference = $true
+        if ($row1 -and $row2) {
+            $hasDifference = $false
+            foreach ($column in $ColumnsToCompare) {
+                if ($row1.$column -ne $row2.$column) {
+                    Write-Output "Row ID ($PrimaryKeyColumn): $key - Column '$column' differs"
+                    Write-Output "  Database1: $($row1.$column)"
+                    Write-Output "  Database2: $($row2.$column)"
+                    $hasDifference = $true
+                }
             }
-        }
-        if (-not $hasDifference) {
-            Write-Output "Row ID ($PrimaryKeyColumn): $key - No differences found across specified columns."
+            if (-not $hasDifference) {
+                Write-Output "Row ID ($PrimaryKeyColumn): $key - No differences found in specified columns."
+            }
+        } elseif ($row1 -and -not $row2) {
+            Write-Output "Row ID ($PrimaryKeyColumn): $key exists only in Database1"
+        } elseif ($row2 -and -not $row1) {
+            Write-Output "Row ID ($PrimaryKeyColumn): $key exists only in Database2"
         }
     }
-    ...
 }
 ```
 
-3. **Handling Missing Rows**:
-   If a row is missing in one of the tables, the script logs this information, helping to identify discrepancies in data structure or availability.
+### Customization Options
 
-```powershell
-elseif ($row1 -and -not $row2) {
-    Write-Output "Row ID ($PrimaryKeyColumn): $key exists in Database1 but not in Database2."
-} 
-elseif (-not $row1 -and $row2) {
-    Write-Output "Row ID ($PrimaryKeyColumn): $key exists in Database2 but not in Database1."
-}
-```
-
-### Example Usage
-
-To run the script, provide the required parameters:
-
-```powershell
-.\Compare-Tables.ps1 -ConnectionString1 "Server=Server1;Database=DB1;User Id=User;Password=Pass;" `
--ConnectionString2 "Server=Server2;Database=DB2;User Id=User;Password=Pass;" `
--TableName "Employee" -PrimaryKeyColumn "EmployeeID" `
--ColumnsToCompare @("FirstName", "LastName", "Email")
-```
+You can further customize this script by:
+- **Adding parameters** for connection authentication (username and password).
+- **Expanding error handling** for scenarios such as connection issues, or missing columns.
+- **Adjusting output formatting** to suit logging requirements or output to a file for record-keeping.
 
